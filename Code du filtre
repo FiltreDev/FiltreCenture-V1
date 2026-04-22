@@ -1,0 +1,651 @@
+// ==UserScript==
+// @name         YouTube Chat Word Guardian (FR) - Shadow DOM Fixed
+// @namespace    https://openai.com/
+// @version      3.0.0
+// @description  Colore les mots à risque dans le champ du live chat YouTube avant envoi, en traversant les shadow roots.
+// @author       OpenAI
+// @match        https://www.youtube.com/live_chat*
+// @match        https://www.youtube.com/live_chat_replay*
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  const STORAGE_KEY = 'ytcwg_shadow_fixed_v1';
+  const BUTTON_ID = 'ytcwg-toggle-btn';
+  const MIRROR_ID = 'ytcwg-fixed-mirror';
+  const FLAG_CLASS = 'ytcwg-flag';
+
+  const DEFAULT_CONFIG = {
+    enabled: true,
+    customTerms: ''
+  };
+
+  const CHAR_MAP = {
+    '@': 'a', '$': 's', '€': 'e', '£': 'l', '¥': 'y', '§': 's',
+    '0': 'o', '1': 'i', '2': 'z', '3': 'e', '4': 'a', '5': 's',
+    '6': 'g', '7': 't', '8': 'b', '9': 'g', '!': 'i', '|': 'i'
+  };
+
+  const LEXICONS = {
+    words: [
+      'abruti','abrutie','ahuri','andouille','anus','anal','baltringue','batard','batarde','beauf','blaireau',
+      'bouffon','bouffonne','bougnoule','branle','branler','branlette','branleur','branleuse','burne','burnes',
+      'buse','buter','caca','cassos','cassosse','chatte','chiant','chiante','chiasses','chiotte','chiottes','chinetoque',
+      'clochard','clodo','con','conne','connard','connasse','connerie','couille','couilles','couillon','couillonne',
+      'cramer','crasseux','crasseuse','cretin','cretine','cul','debile','debilos','dechet','degenere','demeure',
+      'demeuree','egorger','ejac','ejacule','encule','enculee','enculer','enculade','enculard','enculerie',
+      'emmerdeur','emmerdeuse','emmerdant','emmerdante','enfoire','enfoiree','etrangler','fdp','fellation',
+      'fiotte','foutre','frapper','fusiller','gangbang','gland','glandu','gogole','gouine','hardcore','hentai',
+      'idiot','idiote','imbecile','inceste','kassos','larbin','lourdaud','lourde','massacrer','merde','merdeux',
+      'merdeuse','meurtre','milf','mongol','mongole','naz','naze','negre','negro','nibard','nibards','nichons',
+      'nigaud','nul','nulle','nude','nudes','ordure','orgasme','orgie','pede','pédé','pedale','pédale','penis',
+      'petasse','pignouf','plancul','plouc','poignarder','poisonner','poivrot','porc','porno','porn','pornhub',
+      'poufiasse','pouffiasse','pute','putain','queue','queues','raclure','rat','salaud','salope','salopard',
+      'saloperie','seins','sexe','sexcam','sextape','sodomie','sousmerde','sperme','stupide','suce','sucer','tabasser',
+      'tafiole','tarlouze','teub','teube','teubee','teuch','teucha','teuchi','teton','tetons','tocard','tocarde',
+      'travelo','trouduc','troudcul','truie','tuer','vaurien','vermine','vagin','violenter','vulve',
+      'airdrop','binance','bitcoin','bonus','casino','cashapp','click','crypto','discord','fansly','forex',
+      'giveaway','jackpot','marketing','nft','onlyfans','paypal','promo','signal','telegram','temu','venmo',
+      'views','wallet','whatsapp','xvideos','xnxx'
+    ],
+    phrases: [
+      'fils de pute','fille de pute','fils de chien','ferme ta gueule','ta gueule','va te faire foutre',
+      'va te faire enculer','nique ta mere','nique ta mère','nique sa mere','nique sa mère','pauvre merde',
+      'sale merde','espece de merde','espèce de merde','sac a merde','sac à merde','grosse merde','petite merde',
+      'sale con','sale conne','sale pute','sale salope','sale chien','sale porc','sale race','gros porc',
+      'grosse vache','petit con','petite conne','espece de con','espèce de con','espece de conne','espèce de conne',
+      'gros debile','gros débile','grosse debile','grosse débile',
+      'envoie des nudes','envoie moi des nudes','send nudes','viens en dm','viens en mp','plan cul',
+      'video porno','cam sex','chat sex','photo nue','photo nue stp','suce moi','faire l amour','faire l’amour',
+      'je vais te baiser','je vais te niquer','va te faire baiser',
+      'je vais te tuer','on va te tuer','va te tuer','va crever','on sait ou tu habites','on sait où tu habites',
+      'je vais te retrouver','on va te retrouver','je vais te frapper','je vais te buter','je vais te planter',
+      'je vais te poignarder','je vais te doxx','je vais te doxer','on va te swat','adresse perso',
+      'balance son adresse','balance son numero','balance son numéro','donne son adresse','donne son numero',
+      'donne son numéro','fuite de numero','fuite d adresse','fuite d’adresse','go swat','go doxx',
+      'sale arabe','sale noir','sale blanc','sale juif','sale juive','sale pedé','sale pédé','sale trans',
+      'sale lesbienne','sale gay','dehors les arabes','dehors les juifs','dehors les noirs','race de',
+      'espece de bougnoule','espèce de bougnoule',
+      'discord gg','discord com invite','t me','contact me on telegram','contacte moi sur telegram',
+      'viens sur telegram','viens sur whatsapp','link in bio','check my profile','check my channel',
+      'visit my channel','subscribe to my channel','sub4sub','follow4follow','free views','buy views',
+      'buy followers','buy subs','boost your channel','dm me','message me privately','claim prize',
+      'claim your prize','crypto signal','forex signal','guaranteed returns','double your money','only fans',
+      'wallet recovery','seed phrase','private key','verify account','reset password','send code','otp code',
+      'editor for hire','promo service','cheap views','cash app','whats app','discord invite','telegram me',
+      'join my server','click my profile','recover account','investment opportunity'
+    ]
+  };
+
+  let config = loadConfig();
+  let compiled = compileLexicons();
+  let currentInput = null;
+  let mirrorEl = null;
+  let buttonEl = null;
+  let composing = false;
+  let rafId = 0;
+
+  injectStyles();
+  bootstrap();
+
+  function loadConfig() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return { ...DEFAULT_CONFIG };
+      return { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+    } catch (_) {
+      return { ...DEFAULT_CONFIG };
+    }
+  }
+
+  function saveConfig() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+    compiled = compileLexicons();
+    queueRefresh();
+  }
+
+  function compileLexicons() {
+    const wordSet = new Set();
+    const phrases = [];
+
+    for (const word of LEXICONS.words) {
+      const canon = canonicalizeWord(word);
+      if (canon) wordSet.add(canon);
+    }
+
+    for (const phrase of LEXICONS.phrases) {
+      const tokens = normalizePhraseToTokens(phrase);
+      if (tokens.length) phrases.push(tokens);
+    }
+
+    const customBits = (config.customTerms || '')
+      .split(/[\n,;]/)
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    for (const piece of customBits) {
+      const tokens = normalizePhraseToTokens(piece);
+      if (!tokens.length) continue;
+      if (tokens.length === 1) wordSet.add(tokens[0]);
+      else phrases.push(tokens);
+    }
+
+    return { wordSet, phrases };
+  }
+
+  function normalizePhraseToTokens(text) {
+    const norm = normalizeWholeText(text).text;
+    const out = [];
+    const re = /[a-z0-9]+/g;
+    let m;
+    while ((m = re.exec(norm))) {
+      out.push(collapseRepeats(m[0]));
+    }
+    return out;
+  }
+
+  function canonicalizeWord(word) {
+    const norm = normalizeWholeText(word).text;
+    const m = norm.match(/[a-z0-9]+/);
+    return m ? collapseRepeats(m[0]) : '';
+  }
+
+  function collapseRepeats(str) {
+    return str.replace(/(.)\1{2,}/g, '$1');
+  }
+
+  function normalizeWholeText(original) {
+    const chars = [];
+    const map = [];
+    let lastSpace = true;
+
+    for (let i = 0; i < original.length; i++) {
+      const ch = original[i];
+
+      if (/\s/.test(ch)) {
+        if (!lastSpace) {
+          chars.push(' ');
+          map.push(i);
+          lastSpace = true;
+        }
+        continue;
+      }
+
+      if (/[\u200B-\u200D\uFEFF]/.test(ch)) continue;
+
+      const lowered = ch.toLowerCase();
+      const stripped = lowered.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+      for (const raw of stripped) {
+        const c = CHAR_MAP[raw] || raw;
+        if (/[a-z0-9]/.test(c)) {
+          chars.push(c);
+          map.push(i);
+          lastSpace = false;
+        } else {
+          if (!lastSpace) {
+            chars.push(' ');
+            map.push(i);
+            lastSpace = true;
+          }
+        }
+      }
+    }
+
+    while (chars.length && chars[0] === ' ') {
+      chars.shift();
+      map.shift();
+    }
+    while (chars.length && chars[chars.length - 1] === ' ') {
+      chars.pop();
+      map.pop();
+    }
+
+    return { text: chars.join(''), map };
+  }
+
+  function bootstrap() {
+    createButton();
+
+    const mo = new MutationObserver(queueRefresh);
+    mo.observe(document.documentElement || document.body, { childList: true, subtree: true });
+
+    window.addEventListener('load', queueRefresh, true);
+    window.addEventListener('resize', queueRefresh, true);
+    window.addEventListener('scroll', queueRefresh, true);
+
+    setInterval(queueRefresh, 500);
+    queueRefresh();
+  }
+
+  function queueRefresh() {
+    cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(refresh);
+  }
+
+  function refresh() {
+    const input = findBestEditable();
+
+    if (!input) {
+      restoreInputAppearance(currentInput);
+      currentInput = null;
+      destroyMirror();
+      return;
+    }
+
+    if (currentInput !== input) {
+      restoreInputAppearance(currentInput);
+      currentInput = input;
+      installOnInput(input);
+      console.log('[YTCWG] input attached:', describeElement(input));
+    }
+
+    if (!config.enabled) {
+      restoreInputAppearance(input);
+      destroyMirror();
+      return;
+    }
+
+    const text = getInputText(input);
+
+    if (!text) {
+      restoreInputAppearance(input);
+      destroyMirror();
+      return;
+    }
+
+    const result = detectMatches(text);
+    ensureMirror();
+    forceInputTransparent(input);
+    renderMirrorOverInput(input, text, result.ranges);
+    input.style.outline = result.ranges.length ? '1px solid rgba(255, 90, 103, 0.65)' : '';
+  }
+
+  function describeElement(el) {
+    if (!el) return 'null';
+    return {
+      tag: el.tagName,
+      id: el.id || '',
+      cls: el.className || '',
+      role: el.getAttribute('role'),
+      aria: el.getAttribute('aria-label'),
+      placeholder: el.getAttribute('placeholder')
+    };
+  }
+
+  function isVisible(el) {
+    if (!el || !(el instanceof Element)) return false;
+    const r = el.getBoundingClientRect();
+    const s = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+  }
+
+  function isEditableCandidate(el) {
+    if (!el || !(el instanceof Element)) return false;
+    const tag = el.tagName?.toLowerCase();
+
+    if (el.isContentEditable) return true;
+    if (el.getAttribute('role') === 'textbox') return true;
+    if (tag === 'textarea') return true;
+    if (tag === 'input') {
+      const type = (el.getAttribute('type') || 'text').toLowerCase();
+      return ['text', 'search', 'email', 'url', 'tel', ''].includes(type);
+    }
+    return false;
+  }
+
+  function scoreCandidate(el) {
+    let score = 0;
+    const rect = el.getBoundingClientRect();
+    const txt = [
+      el.getAttribute('aria-label') || '',
+      el.getAttribute('placeholder') || '',
+      el.id || '',
+      el.className || ''
+    ].join(' ').toLowerCase();
+
+    if (txt.includes('chat')) score += 50;
+    if (txt.includes('message')) score += 40;
+    if (txt.includes('send')) score += 10;
+    if (el.isContentEditable) score += 10;
+    if (rect.bottom > window.innerHeight * 0.45) score += 20;
+    score += Math.min(20, Math.floor(rect.width * rect.height / 10000));
+
+    let p = el;
+    for (let i = 0; i < 8 && p; i++) {
+      const tag = p.tagName?.toLowerCase() || '';
+      if (tag.includes('yt-live-chat')) score += 25;
+      p = p.parentElement || p.parentNode?.host || null;
+    }
+
+    return score;
+  }
+
+  function walkDeep(root, results, seen) {
+    if (!root || seen.has(root)) return;
+    seen.add(root);
+
+    const children = root.children ? Array.from(root.children) : [];
+    for (const el of children) {
+      if (isEditableCandidate(el) && isVisible(el)) {
+        results.push(el);
+      }
+
+      if (el.shadowRoot) {
+        walkDeep(el.shadowRoot, results, seen);
+      }
+
+      if (el.tagName === 'IFRAME') {
+        try {
+          const doc = el.contentDocument || el.contentWindow?.document;
+          if (doc) walkDeep(doc, results, seen);
+        } catch (_) {}
+      }
+
+      walkDeep(el, results, seen);
+    }
+  }
+
+  function deepestActiveElement(doc = document) {
+    let el = doc.activeElement;
+    while (el && el.shadowRoot && el.shadowRoot.activeElement) {
+      el = el.shadowRoot.activeElement;
+    }
+    return el;
+  }
+
+  function findBestEditable() {
+    const active = deepestActiveElement(document);
+    if (active && isEditableCandidate(active) && isVisible(active)) {
+      return active;
+    }
+
+    const results = [];
+    walkDeep(document, results, new Set());
+
+    if (!results.length) return null;
+
+    results.sort((a, b) => scoreCandidate(b) - scoreCandidate(a));
+    return results[0];
+  }
+
+  function installOnInput(input) {
+    if (!input || input.dataset.ytcwgInstalled === '1') return;
+    input.dataset.ytcwgInstalled = '1';
+
+    input.addEventListener('compositionstart', () => composing = true, true);
+    input.addEventListener('compositionend', () => {
+      composing = false;
+      queueRefresh();
+    }, true);
+
+    input.addEventListener('input', () => {
+      if (!composing) queueRefresh();
+    }, true);
+
+    input.addEventListener('keyup', () => {
+      if (!composing) queueRefresh();
+    }, true);
+
+    input.addEventListener('paste', () => setTimeout(queueRefresh, 0), true);
+    input.addEventListener('click', queueRefresh, true);
+    input.addEventListener('focus', queueRefresh, true);
+    input.addEventListener('scroll', syncMirrorScroll, true);
+
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' && !ev.shiftKey) {
+        setTimeout(() => {
+          queueRefresh();
+        }, 30);
+      }
+    }, true);
+  }
+
+  function getInputText(input) {
+    const tag = input.tagName?.toLowerCase();
+    if (tag === 'textarea' || tag === 'input') return input.value || '';
+    return input.textContent || '';
+  }
+
+  function forceInputTransparent(input) {
+    if (!input) return;
+
+    if (input.dataset.ytcwgOrigColor === undefined) {
+      const s = getComputedStyle(input);
+      input.dataset.ytcwgOrigColor = s.color || '';
+      input.dataset.ytcwgOrigFill = s.webkitTextFillColor || '';
+      input.dataset.ytcwgOrigCaret = s.caretColor || '';
+      input.dataset.ytcwgOrigShadow = s.textShadow || '';
+    }
+
+    input.style.color = 'transparent';
+    input.style.webkitTextFillColor = 'transparent';
+    input.style.textShadow = 'none';
+    input.style.caretColor = input.dataset.ytcwgOrigCaret && input.dataset.ytcwgOrigCaret !== 'auto'
+      ? input.dataset.ytcwgOrigCaret
+      : '#ffffff';
+  }
+
+  function restoreInputAppearance(input) {
+    if (!input) return;
+    if (input.dataset.ytcwgOrigColor !== undefined) input.style.color = input.dataset.ytcwgOrigColor;
+    if (input.dataset.ytcwgOrigFill !== undefined) input.style.webkitTextFillColor = input.dataset.ytcwgOrigFill;
+    if (input.dataset.ytcwgOrigCaret !== undefined) input.style.caretColor = input.dataset.ytcwgOrigCaret;
+    if (input.dataset.ytcwgOrigShadow !== undefined) input.style.textShadow = input.dataset.ytcwgOrigShadow;
+    input.style.outline = '';
+  }
+
+  function ensureMirror() {
+    if (mirrorEl && document.contains(mirrorEl)) return;
+
+    mirrorEl = document.createElement('div');
+    mirrorEl.id = MIRROR_ID;
+    mirrorEl.setAttribute('aria-hidden', 'true');
+    document.documentElement.appendChild(mirrorEl);
+  }
+
+  function destroyMirror() {
+    if (mirrorEl) {
+      mirrorEl.remove();
+      mirrorEl = null;
+    }
+  }
+
+  function syncMirrorScroll() {
+    if (!mirrorEl || !currentInput) return;
+    mirrorEl.scrollTop = currentInput.scrollTop || 0;
+    mirrorEl.scrollLeft = currentInput.scrollLeft || 0;
+  }
+
+  function detectMatches(originalText) {
+    const { text, map } = normalizeWholeText(originalText);
+    const tokens = [];
+    const re = /[a-z0-9]+/g;
+    let m;
+
+    while ((m = re.exec(text))) {
+      const tokenText = m[0];
+      const canonical = collapseRepeats(tokenText);
+      const normStart = m.index;
+      const normEnd = m.index + tokenText.length;
+      const origStart = map[normStart] ?? 0;
+      const origEnd = (map[normEnd - 1] ?? origStart) + 1;
+      tokens.push({ canonical, origStart, origEnd });
+    }
+
+    const ranges = [];
+
+    for (const token of tokens) {
+      if (compiled.wordSet.has(token.canonical)) {
+        ranges.push([token.origStart, token.origEnd]);
+      }
+    }
+
+    for (const phrase of compiled.phrases) {
+      const len = phrase.length;
+      for (let i = 0; i <= tokens.length - len; i++) {
+        let ok = true;
+        for (let j = 0; j < len; j++) {
+          if (tokens[i + j].canonical !== phrase[j]) {
+            ok = false;
+            break;
+          }
+        }
+        if (ok) {
+          ranges.push([tokens[i].origStart, tokens[i + len - 1].origEnd]);
+        }
+      }
+    }
+
+    return { ranges: mergeRanges(ranges) };
+  }
+
+  function mergeRanges(ranges) {
+    if (!ranges.length) return [];
+    const sorted = ranges.filter(r => r[1] > r[0]).sort((a, b) => a[0] - b[0]);
+    const out = [sorted[0].slice()];
+
+    for (let i = 1; i < sorted.length; i++) {
+      const last = out[out.length - 1];
+      const cur = sorted[i];
+      if (cur[0] <= last[1]) last[1] = Math.max(last[1], cur[1]);
+      else out.push(cur.slice());
+    }
+    return out;
+  }
+
+  function renderMirrorOverInput(input, text, ranges) {
+    if (!mirrorEl || !input) return;
+
+    const rect = input.getBoundingClientRect();
+    const s = getComputedStyle(input);
+
+    mirrorEl.style.left = `${rect.left}px`;
+    mirrorEl.style.top = `${rect.top}px`;
+    mirrorEl.style.width = `${rect.width}px`;
+    mirrorEl.style.height = `${rect.height}px`;
+    mirrorEl.style.font = s.font;
+    mirrorEl.style.fontFamily = s.fontFamily;
+    mirrorEl.style.fontSize = s.fontSize;
+    mirrorEl.style.fontWeight = s.fontWeight;
+    mirrorEl.style.fontStyle = s.fontStyle;
+    mirrorEl.style.letterSpacing = s.letterSpacing;
+    mirrorEl.style.lineHeight = s.lineHeight;
+    mirrorEl.style.textAlign = s.textAlign;
+    mirrorEl.style.direction = s.direction;
+    mirrorEl.style.paddingTop = s.paddingTop;
+    mirrorEl.style.paddingRight = s.paddingRight;
+    mirrorEl.style.paddingBottom = s.paddingBottom;
+    mirrorEl.style.paddingLeft = s.paddingLeft;
+    mirrorEl.style.borderTopWidth = s.borderTopWidth;
+    mirrorEl.style.borderRightWidth = s.borderRightWidth;
+    mirrorEl.style.borderBottomWidth = s.borderBottomWidth;
+    mirrorEl.style.borderLeftWidth = s.borderLeftWidth;
+    mirrorEl.style.boxSizing = s.boxSizing;
+    mirrorEl.style.color = input.dataset.ytcwgOrigColor || s.color || '#ffffff';
+
+    mirrorEl.replaceChildren();
+
+    let cursor = 0;
+    for (const [start, end] of ranges) {
+      if (start > cursor) {
+        mirrorEl.appendChild(document.createTextNode(text.slice(cursor, start)));
+      }
+      const span = document.createElement('span');
+      span.className = FLAG_CLASS;
+      span.textContent = text.slice(start, end);
+      mirrorEl.appendChild(span);
+      cursor = end;
+    }
+    if (cursor < text.length) {
+      mirrorEl.appendChild(document.createTextNode(text.slice(cursor)));
+    }
+
+    syncMirrorScroll();
+  }
+
+  function createButton() {
+    if (buttonEl && document.contains(buttonEl)) return;
+
+    buttonEl = document.createElement('button');
+    buttonEl.type = 'button';
+    buttonEl.id = BUTTON_ID;
+
+    buttonEl.addEventListener('click', () => {
+      config.enabled = !config.enabled;
+      saveConfig();
+      updateButton();
+    });
+
+    buttonEl.addEventListener('contextmenu', (ev) => {
+      ev.preventDefault();
+      const value = prompt(
+        'Mots / expressions perso\nUne ligne ou séparés par virgules :',
+        config.customTerms || ''
+      );
+      if (value !== null) {
+        config.customTerms = value;
+        saveConfig();
+      }
+    });
+
+    document.documentElement.appendChild(buttonEl);
+    updateButton();
+  }
+
+  function updateButton() {
+    if (!buttonEl) return;
+    buttonEl.textContent = config.enabled ? 'Filtre chat: ON' : 'Filtre chat: OFF';
+  }
+
+  function injectStyles() {
+    if (document.getElementById('ytcwg-style')) return;
+
+    const style = document.createElement('style');
+    style.id = 'ytcwg-style';
+    style.textContent = `
+      #${BUTTON_ID} {
+        position: fixed;
+        right: 12px;
+        bottom: 72px;
+        z-index: 2147483647;
+        border: 1px solid rgba(255,255,255,.12);
+        background: rgba(16,16,16,.92);
+        color: #fff;
+        border-radius: 999px;
+        padding: 8px 12px;
+        font: 600 12px/1.2 system-ui, sans-serif;
+        cursor: pointer;
+        backdrop-filter: blur(6px);
+      }
+
+      #${BUTTON_ID}:hover {
+        background: rgba(32,32,32,.98);
+      }
+
+      #${MIRROR_ID} {
+        position: fixed;
+        pointer-events: none;
+        z-index: 2147483000;
+        overflow: hidden;
+        background: transparent;
+        white-space: pre-wrap;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+        user-select: none;
+      }
+
+      #${MIRROR_ID} .${FLAG_CLASS} {
+        color: #ff5a67 !important;
+        background: rgba(255, 60, 60, 0.18) !important;
+        border-radius: 4px;
+        box-shadow: inset 0 -1px 0 rgba(255, 80, 80, 0.5);
+        text-decoration: underline wavy rgba(255, 90, 103, 0.95);
+      }
+    `;
+    document.documentElement.appendChild(style);
+  }
+})();
